@@ -4,6 +4,8 @@
 
 ## インストール
 
+[GitHub Releases](https://github.com/hmjn023/oxget/releases)からLinux向けのmusl静的リンク版を取得できます。Intel / AMD 64-bitは `x86_64-unknown-linux-musl`、ARM 64-bitは `aarch64-unknown-linux-musl` を選び、SHA256SUMSと照合して展開してください。glibcやOpenSSLの共有ライブラリは不要です。
+
 Rustのstableツールチェーンでビルドします。
 
 ```sh
@@ -11,6 +13,19 @@ cargo install --path . --locked
 ```
 
 インストール前でも `cargo run --release -- ...` で実行できます。
+
+通常の `cargo build --release` はホスト環境のlibcを使います。配布用muslビルドと通常ビルドは区別してください。
+
+## CIとリリース
+
+GitHub Actionsで、mainへのpush・PR・手動実行時にフォーマット、clippy、全テスト、TUI/IPC操作を確認します。続いてx86_64とARM64のネイティブLinuxランナーでmuslビルド・テストを行い、ELFに動的ローダーや共有ライブラリ依存がないことを検査します。通常の実行ではtar.gzと個別チェックサムをActionsのArtifactsへ保存します。
+
+`Cargo.toml` のversionに合わせた `vVERSION` タグをpushすると、検査に通った両CPU向けのアーカイブとSHA256SUMSをGitHub Releaseへ公開します。アーカイブには実行ファイル・README・LICENSEだけを含めます。ActionsはコミットSHAで固定し、Releaseの作成権限は公開ジョブだけに付与しています。
+
+```sh
+git tag -a v0.1.0 -m 'oxget v0.1.0'
+git push origin v0.1.0
+```
 
 ## 使い方
 

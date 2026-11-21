@@ -1,0 +1,120 @@
+name: CI and Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Format, lint, tests and terminal UI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked
+      - run: python3 tests/tui_smoke.py
+
+  musl:
+    name: Static musl (${{ matrix.target }})
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      TARGET: ${{ matrix.target }}
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install native musl tools and Rust target
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
+          rustup toolchain install stable --profile minimal --target "$TARGET"
+          rustup default stable
+          target_env="${TARGET//-/_}"
+          echo "CC_${target_env}=musl-gcc" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_${target_env^^}_LINKER=musl-gcc" >> "$GITHUB_ENV"
+      - name: Run tests against musl
+        run: cargo test --locked --target "$TARGET"
+      - name: Test musl terminal UI and IPC
+        run: |
+          cargo build --locked --target "$TARGET"
+          OXGET_BINARY="$PWD/target/$TARGET/debug/oxget" python3 tests/tui_smoke.py
+      - name: Build release binary
+        run: cargo build --release --locked --target "$TARGET"
+      - name: Verify static linkage and package
+        run: bash scripts/package-release.sh "$TARGET"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oxget-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [check, musl]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: oxget-*-unknown-linux-musl
+          path: dist
+          merge-multiple: true
+      - name: Verify artifacts and prepare checksums
+        run: |
+          cd dist
+          for sums in *.sha256; do sha256sum --check "$sums"; done
+          test "$(find . -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 2
+          sha256sum ./*.tar.gz | sed 's|  ./|  |' > SHA256SUMS
+      - name: Publish archives and SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            dist/*.tar.gz dist/SHA256SUMS \
+            --verify-tag \
+            --title "oxget $RELEASE_TAG" \
+            --notes-file .github/release-notes.md

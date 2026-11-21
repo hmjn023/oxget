@@ -20,6 +20,7 @@ import time
 
 DATA = bytes(range(251)) * 8192
 ROOT = Path(__file__).resolve().parents[1]
+BINARY = Path(os.environ.get("OXGET_BINARY", str(ROOT / "target/debug/oxget")))
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -52,7 +53,7 @@ class Terminal:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 26, 100, 0, 0))
         self.output = bytearray()
         self.process = subprocess.Popen(
-            [str(ROOT / "target/debug/oxget"), "-d", str(directory), "-r", "0", *args],
+            [str(BINARY), "-d", str(directory), "-r", "0", *args],
             stdin=slave, stdout=slave, stderr=slave,
             env={**os.environ, "TERM": "xterm-256color"},
         )
@@ -108,7 +109,7 @@ def main():
 
             def cli(*args):
                 result = subprocess.run(
-                    [str(ROOT / "target/debug/oxget"), "-d", str(output), "--json", *args],
+                    [str(BINARY), "-d", str(output), "--json", *args],
                     capture_output=True, text=True, timeout=15,
                 )
                 assert result.returncode == 0, (result.stdout, result.stderr)
