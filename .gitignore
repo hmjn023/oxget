@@ -1,0 +1,15 @@
+/target/
+/.oxget/
+/downloads/
+/dist/
+/.aws/
+/.codex/
+/.agents/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+*.log
+*.log.[0-9]*
+.DS_Store
