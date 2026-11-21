@@ -684,6 +684,43 @@ impl Drop for ChildGuard {
 }
 
 #[tokio::test]
+async fn worker_waits_for_a_transient_offline_lock_before_serving_requests() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path();
+    let _guard = WorkerGuard(path.into());
+    let store = oxget::model::Store::open(path).unwrap();
+    let mut child = ChildGuard(
+        std::process::Command::new(env!("CARGO_BIN_EXE_oxget"))
+            .arg("__worker")
+            .arg("-d")
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(store);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (code, status) = command(path, &["status"]).await;
+            assert_eq!(code, 0, "{status}");
+            if status["data"]["running"] == true {
+                break;
+            }
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "Worker treated an offline status response as an already running worker"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("worker should acquire the released lock");
+}
+
+#[tokio::test]
 async fn crashed_worker_recovers_partial_files_and_replaces_its_stale_endpoint() {
     let server = Server::start(Mode::Ranges, 4 * 1024 * 1024, true).await;
     let dir = tempfile::tempdir().unwrap();

@@ -531,8 +531,24 @@ async fn legacy(output: &Path, urls: Vec<String>, args: &Cli) -> crate::control:
 }
 
 async fn worker(output: &Path, args: &Cli) -> crate::control::Result<Reply> {
-    let Some(store) = Store::try_open(output).map_err(Failure::io)? else {
-        return execute(output, &Action::Status { id: None }, args).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let store = loop {
+        if let Some(store) = Store::try_open(output).map_err(Failure::io)? {
+            break store;
+        }
+        // A short-lived offline CLI can hold the lock too. Its status response
+        // is not evidence that another worker has started.
+        let status = execute(output, &Action::Status { id: None }, args).await?;
+        if !status.ok || status.data["running"] == true {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            return Err(Failure::new(
+                "busy",
+                "Could not acquire the queue lock while starting the worker",
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
     };
     let mut app = open_app(output, store, args)?;
     app.exit_when_done = args.exit_when_done;
